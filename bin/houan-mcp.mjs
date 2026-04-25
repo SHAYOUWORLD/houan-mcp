@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 const SERVER_NAME = "houan-mcp";
-const SERVER_VERSION = "0.1.1";
+const SERVER_VERSION = "0.1.2";
 const PROTOCOL_VERSION = "2025-06-18";
 const NDL_API_BASE = "https://kokkai.ndl.go.jp/api";
 const NDL_TXT_BASE = "https://kokkai.ndl.go.jp/txt";
@@ -21,7 +21,9 @@ const RESPONSE_BYTE_CAP = 10 * 1024 * 1024;
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const CACHE_MAX_ENTRIES = 64;
 const STDIN_BUFFER_CAP = 1 * 1024 * 1024;
+const QUEUE_MAX_PENDING = 64;
 const RATE_LIMIT_MAX_INFLIGHT = 4;
+const STRIP_TAGS_MAX_INPUT = 2 * 1024 * 1024;
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const ISSUE_ID_PATTERN = /^[0-9A-Za-z]{1,40}$/;
 const KEYWORD_MAX = 200;
@@ -216,8 +218,12 @@ function decodeHtmlEntities(text) {
 }
 
 function stripTags(html) {
+  let text = String(html);
+  if (text.length > STRIP_TAGS_MAX_INPUT) {
+    text = text.slice(0, STRIP_TAGS_MAX_INPUT);
+  }
   return decodeHtmlEntities(
-    String(html)
+    text
       .replace(/<script[\s\S]*?<\/script>/gi, " ")
       .replace(/<style[\s\S]*?<\/style>/gi, " ")
       .replace(/<[^>]+>/g, " ")
@@ -300,6 +306,9 @@ async function fetchAllowed(url, expectedOrigin, accept) {
   if (target.pathname.includes("..") || target.pathname.includes("//")) {
     throw new Error(`Refused suspicious path in ${target.pathname}`);
   }
+  // Strip fragment so clients cannot bypass the cache or rate limit by
+  // appending differing #fragments to otherwise-identical URLs.
+  target.hash = "";
 
   const cacheKey = `${accept}|${target.toString()}`;
   const cached = responseCache.get(cacheKey);
@@ -842,10 +851,22 @@ async function handleLine(line) {
 }
 
 let queueChain = Promise.resolve();
+let queuedCount = 0;
 function enqueue(line) {
-  queueChain = queueChain.then(() => handleLine(line)).catch((err) => {
-    log(err?.stack ?? String(err));
-  });
+  if (queuedCount >= QUEUE_MAX_PENDING) {
+    log(`request queue full (${QUEUE_MAX_PENDING}), dropping line`);
+    rpcError(null, -32603, "Server is overloaded; request dropped");
+    return;
+  }
+  queuedCount++;
+  queueChain = queueChain
+    .then(() => handleLine(line))
+    .catch((err) => {
+      log(err?.stack ?? String(err));
+    })
+    .finally(() => {
+      queuedCount--;
+    });
 }
 
 let buffer = "";

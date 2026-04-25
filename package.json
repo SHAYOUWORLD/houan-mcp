@@ -1,6 +1,6 @@
 {
   "name": "@codeagentjp/houan-mcp",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Local stdio MCP server for searching Japanese Diet bills (衆参議案情報) and retrieving committee Q&A records via the NDL Kokkai API.",
   "type": "module",
   "bin": {
