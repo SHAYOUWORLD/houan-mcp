@@ -1,0 +1,44 @@
+{
+  "name": "@codeagentjp/houan-mcp",
+  "version": "0.1.0",
+  "description": "Local stdio MCP server for searching Japanese Diet bills (衆参議案情報) and retrieving committee Q&A records via the NDL Kokkai API.",
+  "type": "module",
+  "bin": {
+    "houan-mcp": "./bin/houan-mcp.mjs"
+  },
+  "files": [
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "diet",
+    "houan",
+    "japanese-law",
+    "japan",
+    "national-diet",
+    "shugiin",
+    "sangiin",
+    "ndl-kokkai",
+    "legal-tech",
+    "policy-tech"
+  ],
+  "author": "codeagent.jp",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SHAYOUWORLD/houan-mcp.git"
+  },
+  "homepage": "https://codeagent.jp/tools/houan-mcp",
+  "bugs": {
+    "url": "https://github.com/SHAYOUWORLD/houan-mcp/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
