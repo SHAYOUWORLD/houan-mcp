@@ -1,17 +1,33 @@
 #!/usr/bin/env node
 
 const SERVER_NAME = "houan-mcp";
-const SERVER_VERSION = "0.1.0";
+const SERVER_VERSION = "0.1.1";
 const PROTOCOL_VERSION = "2025-06-18";
 const NDL_API_BASE = "https://kokkai.ndl.go.jp/api";
 const NDL_TXT_BASE = "https://kokkai.ndl.go.jp/txt";
-const SHUGIIN_BASE = "https://www.shugiin.go.jp/internet/itdb_gian.nsf/html/gian";
-const SANGIIN_BASE = "https://www.sangiin.go.jp/japanese/joho1/kousei/gian";
+const NDL_ORIGIN = "https://kokkai.ndl.go.jp";
+const SHUGIIN_ORIGIN = "https://www.shugiin.go.jp";
+const SANGIIN_ORIGIN = "https://www.sangiin.go.jp";
+const SHUGIIN_BASE = `${SHUGIIN_ORIGIN}/internet/itdb_gian.nsf/html/gian`;
+const SANGIIN_BASE = `${SANGIIN_ORIGIN}/japanese/joho1/kousei/gian`;
+const SHUGIIN_PATH_PREFIX = "/internet/itdb_gian.nsf/";
+const SANGIIN_PATH_PREFIX = "/japanese/joho1/kousei/gian/";
 const DEFAULT_SESSION = 221;
 const REQUEST_TIMEOUT_MS = (() => {
   const parsed = Number.parseInt(process.env.HOUAN_MCP_TIMEOUT_MS ?? "20000", 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 20000;
 })();
+const RESPONSE_BYTE_CAP = 10 * 1024 * 1024;
+const CACHE_TTL_MS = 5 * 60 * 1000;
+const CACHE_MAX_ENTRIES = 64;
+const STDIN_BUFFER_CAP = 1 * 1024 * 1024;
+const RATE_LIMIT_MAX_INFLIGHT = 4;
+const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const ISSUE_ID_PATTERN = /^[0-9A-Za-z]{1,40}$/;
+const KEYWORD_MAX = 200;
+const COMMITTEE_MAX = 100;
+const SPEAKER_MAX = 100;
+const PROCEEDING_URL_MAX = 500;
 
 const tools = [
   {
@@ -93,7 +109,7 @@ const tools = [
   {
     name: "get_bill",
     description:
-      "Retrieve detail of one bill by chamber and proceedings URL. Returns title, submitter, committee assignment, and a status timeline parsed from the proceedings page.",
+      "Retrieve detail of one bill by chamber and proceedings URL. Returns title, submitter, committee assignment, and a status timeline parsed from the proceedings page. The proceedingURL must be a URL returned by search_bills.",
     inputSchema: {
       type: "object",
       properties: {
@@ -121,20 +137,62 @@ function log(message) {
   process.stderr.write(`[${SERVER_NAME}] ${message}\n`);
 }
 
-function rpcResult(id, result) {
-  writeJson({ jsonrpc: "2.0", id, result });
-}
-
 function rpcError(id, code, message, data) {
   const error = data === undefined ? { code, message } : { code, message, data };
   writeJson({ jsonrpc: "2.0", id, error });
 }
 
-function assertString(value, name) {
-  if (typeof value !== "string" || value.trim() === "") {
+function assertString(value, name, opts = {}) {
+  if (typeof value !== "string") {
+    throw new Error(`${name} must be a string`);
+  }
+  const trimmed = value.trim();
+  if (trimmed === "") {
     throw new Error(`${name} must be a non-empty string`);
   }
-  return value.trim();
+  const max = opts.maxLength ?? 200;
+  if (trimmed.length > max) {
+    throw new Error(`${name} exceeds maximum length ${max}`);
+  }
+  if (opts.pattern && !opts.pattern.test(trimmed)) {
+    throw new Error(`${name} does not match expected format`);
+  }
+  return trimmed;
+}
+
+function assertEnum(value, name, allowed) {
+  if (typeof value !== "string") {
+    throw new Error(`${name} must be a string`);
+  }
+  const trimmed = value.trim();
+  if (!allowed.includes(trimmed)) {
+    throw new Error(`${name} must be one of ${allowed.join(", ")}, got ${trimmed}`);
+  }
+  return trimmed;
+}
+
+function optionalString(value, name, opts = {}) {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") {
+    throw new Error(`${name} must be a string when provided`);
+  }
+  const trimmed = value.trim();
+  if (trimmed === "") return undefined;
+  const max = opts.maxLength ?? 200;
+  if (trimmed.length > max) {
+    throw new Error(`${name} exceeds maximum length ${max}`);
+  }
+  if (opts.pattern && !opts.pattern.test(trimmed)) {
+    throw new Error(`${name} does not match expected format`);
+  }
+  if (opts.allowed && !opts.allowed.includes(trimmed)) {
+    throw new Error(`${name} must be one of ${opts.allowed.join(", ")}, got ${trimmed}`);
+  }
+  return trimmed;
+}
+
+function optionalDate(value, name) {
+  return optionalString(value, name, { maxLength: 10, pattern: ISO_DATE_PATTERN });
 }
 
 function clampNumber(value, fallback, min, max) {
@@ -167,18 +225,97 @@ function stripTags(html) {
   ).trim();
 }
 
-async function fetchAllowed(url, expectedOrigin, accept) {
-  const target = new URL(url);
-  if (target.origin !== expectedOrigin) {
-    throw new Error(`Refused fetch outside ${expectedOrigin}: ${url}`);
+const responseCache = new Map();
+let inflightCount = 0;
+const inflightWaiters = [];
+
+function acquireInflightSlot() {
+  if (inflightCount < RATE_LIMIT_MAX_INFLIGHT) {
+    inflightCount++;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => inflightWaiters.push(resolve));
+}
+
+function releaseInflightSlot() {
+  inflightCount--;
+  const next = inflightWaiters.shift();
+  if (next) {
+    inflightCount++;
+    next();
+  }
+}
+
+function pruneCache() {
+  if (responseCache.size <= CACHE_MAX_ENTRIES) return;
+  const oldest = responseCache.keys().next().value;
+  if (oldest !== undefined) responseCache.delete(oldest);
+}
+
+async function readBodyWithCap(response) {
+  const reader = response.body?.getReader?.();
+  if (!reader) {
+    const buf = await response.arrayBuffer();
+    if (buf.byteLength > RESPONSE_BYTE_CAP) {
+      throw new Error(`Response exceeds ${RESPONSE_BYTE_CAP}-byte cap`);
+    }
+    return new Uint8Array(buf);
   }
 
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > RESPONSE_BYTE_CAP) {
+      try {
+        await reader.cancel();
+      } catch {
+        // ignore
+      }
+      throw new Error(`Response exceeds ${RESPONSE_BYTE_CAP}-byte cap`);
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
+}
+
+async function fetchAllowed(url, expectedOrigin, accept) {
+  let target;
+  try {
+    target = new URL(url);
+  } catch {
+    throw new Error(`Invalid URL: ${url}`);
+  }
+  if (target.origin !== expectedOrigin) {
+    throw new Error(`Refused fetch outside ${expectedOrigin}`);
+  }
+  if (target.pathname.includes("..") || target.pathname.includes("//")) {
+    throw new Error(`Refused suspicious path in ${target.pathname}`);
+  }
+
+  const cacheKey = `${accept}|${target.toString()}`;
+  const cached = responseCache.get(cacheKey);
+  if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
+    responseCache.delete(cacheKey);
+    responseCache.set(cacheKey, cached);
+    return cached;
+  }
+
+  await acquireInflightSlot();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
     const response = await fetch(target, {
       method: "GET",
-      redirect: "follow",
+      redirect: "error",
       signal: controller.signal,
       headers: {
         "User-Agent": `${SERVER_NAME}/${SERVER_VERSION} (+https://github.com/SHAYOUWORLD/houan-mcp)`,
@@ -188,21 +325,43 @@ async function fetchAllowed(url, expectedOrigin, accept) {
     if (!response.ok) {
       throw new Error(`HTTP ${response.status} from ${target.host}${target.pathname}`);
     }
-    return response;
+    const body = await readBodyWithCap(response);
+    const contentType = response.headers.get("content-type") ?? "";
+    const result = { body, contentType, fetchedAt: Date.now() };
+    responseCache.set(cacheKey, result);
+    pruneCache();
+    return result;
   } finally {
     clearTimeout(timer);
+    releaseInflightSlot();
   }
 }
 
 async function fetchJson(url) {
-  const response = await fetchAllowed(url, "https://kokkai.ndl.go.jp", "application/json");
-  return await response.json();
+  const { body } = await fetchAllowed(url, NDL_ORIGIN, "application/json");
+  const text = new TextDecoder("utf-8").decode(body);
+  return JSON.parse(text);
 }
 
 async function fetchHtml(url, expectedOrigin) {
-  const response = await fetchAllowed(url, expectedOrigin, "text/html,*/*");
-  // Pages may declare Shift_JIS but most serve UTF-8 in practice; rely on content-type.
-  return await response.text();
+  const { body, contentType } = await fetchAllowed(url, expectedOrigin, "text/html,*/*");
+  const charsetMatch = /charset=\s*"?([^\s;"]+)/i.exec(contentType);
+  const charset = charsetMatch ? charsetMatch[1].toLowerCase() : null;
+  const useShiftJis =
+    charset === "shift_jis" ||
+    charset === "shift-jis" ||
+    charset === "x-sjis" ||
+    charset === "ms_kanji" ||
+    charset === "windows-31j" ||
+    charset === "cp932" ||
+    (expectedOrigin === SHUGIIN_ORIGIN && (!charset || charset === "iso-8859-1"));
+  let decoder;
+  try {
+    decoder = useShiftJis ? new TextDecoder("shift_jis") : new TextDecoder("utf-8");
+  } catch {
+    decoder = new TextDecoder("utf-8");
+  }
+  return decoder.decode(body);
 }
 
 function attribution(extra) {
@@ -241,16 +400,19 @@ function buildSpeechApiUrl(args) {
 }
 
 async function findDietQa(args) {
-  const keyword = assertString(args?.keyword, "keyword");
+  const keyword = assertString(args?.keyword, "keyword", { maxLength: KEYWORD_MAX });
   const limit = clampNumber(args?.limit, 10, 1, 100);
   const apiArgs = {
     keyword,
     limit,
-    from: typeof args?.from === "string" ? args.from.trim() : undefined,
-    until: typeof args?.until === "string" ? args.until.trim() : undefined,
-    chamber: typeof args?.chamber === "string" ? args.chamber.trim() : undefined,
-    committee: typeof args?.committee === "string" ? args.committee.trim() : undefined,
-    speaker: typeof args?.speaker === "string" ? args.speaker.trim() : undefined,
+    from: optionalDate(args?.from, "from"),
+    until: optionalDate(args?.until, "until"),
+    chamber: optionalString(args?.chamber, "chamber", {
+      maxLength: 20,
+      allowed: ["衆議院", "参議院", "両院", "両院協議会"],
+    }),
+    committee: optionalString(args?.committee, "committee", { maxLength: COMMITTEE_MAX }),
+    speaker: optionalString(args?.speaker, "speaker", { maxLength: SPEAKER_MAX }),
   };
 
   const url = buildSpeechApiUrl(apiArgs);
@@ -293,7 +455,10 @@ async function findDietQa(args) {
 }
 
 async function getMeetingRecord(args) {
-  const issueID = assertString(args?.issueID, "issueID");
+  const issueID = assertString(args?.issueID, "issueID", {
+    maxLength: 40,
+    pattern: ISSUE_ID_PATTERN,
+  });
   const url = `${NDL_API_BASE}/meeting?issueID=${encodeURIComponent(issueID)}&maximumRecords=1&recordPacking=json`;
   const data = await fetchJson(url);
   const records = Array.isArray(data?.meetingRecord) ? data.meetingRecord : [];
@@ -348,7 +513,7 @@ function absoluteShugiinUrl(href, session) {
   if (!href) return null;
   if (/^https?:/i.test(href)) return href;
   if (href.startsWith("./")) return `${SHUGIIN_BASE}/${session}/${href.slice(2)}`;
-  if (href.startsWith("/")) return `https://www.shugiin.go.jp${href}`;
+  if (href.startsWith("/")) return `${SHUGIIN_ORIGIN}${href}`;
   return `${SHUGIIN_BASE}/${session}/${href}`;
 }
 
@@ -356,7 +521,7 @@ function absoluteSangiinUrl(href, session) {
   if (!href) return null;
   if (/^https?:/i.test(href)) return href;
   if (href.startsWith("./")) return `${SANGIIN_BASE}/${session}/${href.slice(2)}`;
-  if (href.startsWith("/")) return `https://www.sangiin.go.jp${href}`;
+  if (href.startsWith("/")) return `${SANGIIN_ORIGIN}${href}`;
   return `${SANGIIN_BASE}/${session}/${href}`;
 }
 
@@ -374,7 +539,7 @@ function parseShugiinBills(html, session) {
     const numCell = text[0];
     if (!/^\d+$/.test(numCell)) continue;
     const links = [];
-    for (const a of row.matchAll(/<a\s+[^>]*href=\"([^\"]+)\"[^>]*>([\s\S]*?)<\/a>/gi)) {
+    for (const a of row.matchAll(/<a\s+[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)) {
       links.push({ href: a[1], text: stripTags(a[2]) });
     }
     const titleLink = links.find((l) => l.text && !/(過去|本文|要綱|英文|提出時)/.test(l.text));
@@ -384,7 +549,7 @@ function parseShugiinBills(html, session) {
       chamber: "shugiin",
       session,
       billNumber: numCell,
-      title: titleLink ? titleLink.text : text[1] ?? "",
+      title: titleLink ? titleLink.text : (text[1] ?? ""),
       status: text[text.length - 1] ?? "",
       proceedingURL: absoluteShugiinUrl(proceeding?.href ?? titleLink?.href ?? null, session),
       fullTextURL: absoluteShugiinUrl(fullText?.href ?? null, session),
@@ -407,7 +572,7 @@ function parseSangiinBills(html, session) {
     const numCell = text[0];
     if (!/^\d+$/.test(numCell)) continue;
     const links = [];
-    for (const a of row.matchAll(/<a\s+[^>]*href=\"([^\"]+)\"[^>]*>([\s\S]*?)<\/a>/gi)) {
+    for (const a of row.matchAll(/<a\s+[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)) {
       links.push({ href: a[1], text: stripTags(a[2]) });
     }
     const titleLink = links.find((l) => l.text);
@@ -415,7 +580,7 @@ function parseSangiinBills(html, session) {
       chamber: "sangiin",
       session,
       billNumber: numCell,
-      title: titleLink ? titleLink.text : text[1] ?? "",
+      title: titleLink ? titleLink.text : (text[1] ?? ""),
       status: text[text.length - 1] ?? "",
       proceedingURL: absoluteSangiinUrl(titleLink?.href ?? null, session),
       fullTextURL: null,
@@ -425,8 +590,8 @@ function parseSangiinBills(html, session) {
 }
 
 async function searchBills(args) {
-  const keyword = assertString(args?.keyword, "keyword");
-  const chamber = args?.chamber ?? "both";
+  const keyword = assertString(args?.keyword, "keyword", { maxLength: KEYWORD_MAX });
+  const chamber = assertEnum(args?.chamber ?? "both", "chamber", ["shugiin", "sangiin", "both"]);
   const session = clampNumber(args?.session, DEFAULT_SESSION, 1, 9999);
   const limit = clampNumber(args?.limit, 30, 1, 200);
   const needle = keyword.toLowerCase();
@@ -438,7 +603,7 @@ async function searchBills(args) {
     const url = shugiinIndexUrl(session);
     sources.shugiin = url;
     try {
-      const html = await fetchHtml(url, "https://www.shugiin.go.jp");
+      const html = await fetchHtml(url, SHUGIIN_ORIGIN);
       collected.push(...parseShugiinBills(html, session));
     } catch (err) {
       log(`shugiin fetch failed: ${err instanceof Error ? err.message : err}`);
@@ -449,7 +614,7 @@ async function searchBills(args) {
     const url = sangiinIndexUrl(session);
     sources.sangiin = url;
     try {
-      const html = await fetchHtml(url, "https://www.sangiin.go.jp");
+      const html = await fetchHtml(url, SANGIIN_ORIGIN);
       collected.push(...parseSangiinBills(html, session));
     } catch (err) {
       log(`sangiin fetch failed: ${err instanceof Error ? err.message : err}`);
@@ -472,14 +637,32 @@ async function searchBills(args) {
   };
 }
 
-async function getBill(args) {
-  const chamber = assertString(args?.chamber, "chamber");
-  if (chamber !== "shugiin" && chamber !== "sangiin") {
-    throw new Error(`chamber must be shugiin or sangiin, got ${chamber}`);
+function validateProceedingUrl(chamber, raw) {
+  const value = assertString(raw, "proceedingURL", { maxLength: PROCEEDING_URL_MAX });
+  let target;
+  try {
+    target = new URL(value);
+  } catch {
+    throw new Error(`proceedingURL is not a valid URL: ${value}`);
   }
-  const proceedingURL = assertString(args?.proceedingURL, "proceedingURL");
-  const expectedOrigin =
-    chamber === "shugiin" ? "https://www.shugiin.go.jp" : "https://www.sangiin.go.jp";
+  const expectedOrigin = chamber === "shugiin" ? SHUGIIN_ORIGIN : SANGIIN_ORIGIN;
+  const expectedPathPrefix = chamber === "shugiin" ? SHUGIIN_PATH_PREFIX : SANGIIN_PATH_PREFIX;
+  if (target.origin !== expectedOrigin) {
+    throw new Error(`proceedingURL must be on ${expectedOrigin}`);
+  }
+  if (!target.pathname.startsWith(expectedPathPrefix)) {
+    throw new Error(`proceedingURL must be under ${expectedPathPrefix}`);
+  }
+  if (target.pathname.includes("..") || target.pathname.includes("//")) {
+    throw new Error("proceedingURL contains forbidden path segments");
+  }
+  return { target, expectedOrigin };
+}
+
+async function getBill(args) {
+  const chamber = assertEnum(args?.chamber, "chamber", ["shugiin", "sangiin"]);
+  const { target, expectedOrigin } = validateProceedingUrl(chamber, args?.proceedingURL);
+  const proceedingURL = target.toString();
   const html = await fetchHtml(proceedingURL, expectedOrigin);
 
   const titleMatch =
@@ -492,14 +675,17 @@ async function getBill(args) {
       ? {
           submitter: /提出者[^<]*<\/[^>]*>([\s\S]*?)<(?:tr|\/table)/i,
           submittedDate: /提出日[^<]*<\/[^>]*>([\s\S]*?)<(?:tr|\/table)/i,
-          committee: /(?:衆議院での所属委員会|付託委員会|付託)[^<]*<\/[^>]*>([\s\S]*?)<(?:tr|\/table)/i,
-          status: /(?:衆議院での審査状況|現状況|状況)[^<]*<\/[^>]*>([\s\S]*?)<(?:tr|\/table)/i,
+          committee:
+            /(?:衆議院での所属委員会|付託委員会|付託)[^<]*<\/[^>]*>([\s\S]*?)<(?:tr|\/table)/i,
+          status:
+            /(?:衆議院での審査状況|現状況|状況)[^<]*<\/[^>]*>([\s\S]*?)<(?:tr|\/table)/i,
         }
       : {
           submitter: /(?:提出者|発議者)[^<]*<\/[^>]*>([\s\S]*?)<(?:tr|\/table)/i,
           submittedDate: /(?:提出日|提出年月日)[^<]*<\/[^>]*>([\s\S]*?)<(?:tr|\/table)/i,
           committee: /(?:付託委員会|付託)[^<]*<\/[^>]*>([\s\S]*?)<(?:tr|\/table)/i,
-          status: /(?:議案の状況|議案状況|参議院での審議|状況)[^<]*<\/[^>]*>([\s\S]*?)<(?:tr|\/table)/i,
+          status:
+            /(?:議案の状況|議案状況|参議院での審議|状況)[^<]*<\/[^>]*>([\s\S]*?)<(?:tr|\/table)/i,
         };
 
   const fields = {};
@@ -571,10 +757,13 @@ function toolResult(data) {
   };
 }
 
-async function handleRequest(message) {
+async function computeResponse(message) {
   if (!message || message.jsonrpc !== "2.0") {
-    rpcError(message?.id ?? null, -32600, "Invalid JSON-RPC message");
-    return;
+    return {
+      jsonrpc: "2.0",
+      id: message?.id ?? null,
+      error: { code: -32600, message: "Invalid JSON-RPC message" },
+    };
   }
 
   const { id, method, params } = message;
@@ -582,43 +771,52 @@ async function handleRequest(message) {
   try {
     switch (method) {
       case "initialize":
-        rpcResult(id, {
-          protocolVersion: params?.protocolVersion ?? PROTOCOL_VERSION,
-          capabilities: { tools: {} },
-          serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
-        });
-        break;
-
+        return {
+          jsonrpc: "2.0",
+          id,
+          result: {
+            protocolVersion: params?.protocolVersion ?? PROTOCOL_VERSION,
+            capabilities: { tools: {} },
+            serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
+          },
+        };
       case "notifications/initialized":
-        break;
-
+        return null;
       case "ping":
-        rpcResult(id, {});
-        break;
-
+        return { jsonrpc: "2.0", id, result: {} };
       case "tools/list":
-        rpcResult(id, { tools });
-        break;
-
+        return { jsonrpc: "2.0", id, result: { tools } };
       case "tools/call": {
-        const toolName = assertString(params?.name, "params.name");
+        const toolName = assertString(params?.name, "params.name", { maxLength: 64 });
         const data = await callTool(toolName, params?.arguments ?? {});
-        rpcResult(id, toolResult(data));
-        break;
+        return { jsonrpc: "2.0", id, result: toolResult(data) };
       }
-
       default:
         if (id !== undefined) {
-          rpcError(id, -32601, `Method not found: ${method}`);
+          return {
+            jsonrpc: "2.0",
+            id,
+            error: { code: -32601, message: `Method not found: ${method}` },
+          };
         }
-        break;
+        return null;
     }
   } catch (error) {
     log(error?.stack ?? String(error));
     if (id !== undefined) {
-      rpcError(id, -32000, error instanceof Error ? error.message : String(error));
+      return {
+        jsonrpc: "2.0",
+        id,
+        error: { code: -32000, message: error instanceof Error ? error.message : String(error) },
+      };
     }
+    return null;
   }
+}
+
+async function handleSingle(message) {
+  const response = await computeResponse(message);
+  if (response !== null) writeJson(response);
 }
 
 async function handleLine(line) {
@@ -632,28 +830,44 @@ async function handleLine(line) {
     return;
   }
   if (Array.isArray(message)) {
-    for (const item of message) {
-      await handleRequest(item);
+    if (message.length === 0) {
+      rpcError(null, -32600, "Invalid Request");
+      return;
     }
+    const responses = (await Promise.all(message.map(computeResponse))).filter((r) => r !== null);
+    if (responses.length > 0) writeJson(responses);
     return;
   }
-  await handleRequest(message);
+  await handleSingle(message);
+}
+
+let queueChain = Promise.resolve();
+function enqueue(line) {
+  queueChain = queueChain.then(() => handleLine(line)).catch((err) => {
+    log(err?.stack ?? String(err));
+  });
 }
 
 let buffer = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
   buffer += chunk;
+  if (buffer.length > STDIN_BUFFER_CAP) {
+    log(`stdin buffer exceeded ${STDIN_BUFFER_CAP} bytes, dropping pending input`);
+    buffer = "";
+    return;
+  }
   const lines = buffer.split(/\r?\n/);
   buffer = lines.pop() ?? "";
   for (const line of lines) {
-    void handleLine(line);
+    enqueue(line);
   }
 });
 
 process.stdin.on("end", () => {
   if (buffer.trim()) {
-    void handleLine(buffer);
+    enqueue(buffer);
+    buffer = "";
   }
 });
 
