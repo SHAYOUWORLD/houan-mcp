@@ -98,13 +98,12 @@ Search 衆議院議案情報 / 参議院議案情報 by title keyword.
 
 ### `get_bill`
 
-Retrieve a bill detail page (proceedings timeline, committee assignment, full-text URL).
+Retrieve a bill detail page (proceedings timeline, committee assignment, full-text URL). The `proceedingURL` must be a URL returned by `search_bills` — it is validated against the chamber's allowed path prefix before fetching.
 
 ```json
 {
   "chamber": "shugiin",
-  "session": 221,
-  "billNumber": "1"
+  "proceedingURL": "https://www.shugiin.go.jp/internet/itdb_gian.nsf/html/gian/keika/1DE..."
 }
 ```
 
