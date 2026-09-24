@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 const SERVER_NAME = "houan-mcp";
-const SERVER_VERSION = "0.1.2";
+const SERVER_VERSION = "0.1.3";
 const PROTOCOL_VERSION = "2025-06-18";
 const NDL_API_BASE = "https://kokkai.ndl.go.jp/api";
 const NDL_TXT_BASE = "https://kokkai.ndl.go.jp/txt";

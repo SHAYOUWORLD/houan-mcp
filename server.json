@@ -1,0 +1,21 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.SHAYOUWORLD/houan-mcp",
+  "description": "Search Japanese Diet bills and meeting transcripts (NDL Kokkai API) with source attribution.",
+  "repository": {
+    "url": "https://github.com/SHAYOUWORLD/houan-mcp",
+    "source": "github"
+  },
+  "websiteUrl": "https://codeagent.jp/posts/houan-mcp-use-cases/",
+  "version": "0.1.3",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@codeagentjp/houan-mcp",
+      "version": "0.1.3",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

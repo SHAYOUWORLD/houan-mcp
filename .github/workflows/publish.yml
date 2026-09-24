@@ -29,3 +29,18 @@ jobs:
         run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+      - name: Verify server.json version matches tag
+        run: |
+          SERVER_VERSION=$(node -p "require('./server.json').version")
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          if [ "$SERVER_VERSION" != "$TAG_VERSION" ]; then
+            echo "Tag $TAG_VERSION does not match server.json version $SERVER_VERSION"
+            exit 1
+          fi
+      - name: Authenticate to MCP Registry
+        run: ./mcp-publisher login github-oidc
+      - name: Publish to MCP Registry
+        run: ./mcp-publisher publish
