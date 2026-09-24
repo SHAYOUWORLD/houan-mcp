@@ -148,7 +148,9 @@ The response includes 花田貴裕 政府参考人's verbatim answer with `meeti
 
 - Sibling MCP for current laws: [`@codeagentjp/egov-law-mcp`](https://github.com/SHAYOUWORLD/egov-law-mcp)
 - Roadmap (法令diff / 自治体条例 / 判例 MCPs): [SHAYOUWORLD/egov-law-mcp#1](https://github.com/SHAYOUWORLD/egov-law-mcp/issues/1)
-- Background article: [codeagent.jp / Tools](https://codeagent.jp/tools/)
+- Use cases (Japanese): [houan-mcp の7つの実用ユースケース (codeagent.jp)](https://codeagent.jp/posts/houan-mcp-use-cases/)
+- From bills to current law (Japanese): [houan-mcpとe-Gov法令MCPの調査フロー (codeagent.jp)](https://codeagent.jp/posts/houan-egov-mcp-research-workflow/)
+- Other Japanese public-data APIs and MCP servers: [codeagent.jp/guides/public-data-api/](https://codeagent.jp/guides/public-data-api/)
 
 ## License
 
