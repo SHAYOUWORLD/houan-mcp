@@ -15,7 +15,7 @@
 1. **NDL Kokkai API** (https://kokkai.ndl.go.jp/api.html)
     - 認証不要、JSON/XML 出力、3エンドポイント (`/api/speech`, `/api/meeting_list`, `/api/meeting`)
     - 議事録は会議開催から 1〜2 週間遅れで索引される
-    - レート制限: 一括アクセス・並列リクエストを避けるよう案内あり
+    - レート制限: 一括アクセス・並列リクエストを避けるよう案内あり（実装は ADR 0004）
 2. **衆議院議案情報** (https://www.shugiin.go.jp/internet/itdb_gian.nsf/html/gian/)
     - 公開API なし、HTMLテーブル
     - URL パターン: `{base}/{session}/{session}gian.htm`、詳細は `./keika/{HEX_ID}.htm`

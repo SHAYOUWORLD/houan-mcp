@@ -23,6 +23,15 @@ const CACHE_MAX_ENTRIES = 64;
 const STDIN_BUFFER_CAP = 1 * 1024 * 1024;
 const QUEUE_MAX_PENDING = 64;
 const RATE_LIMIT_MAX_INFLIGHT = 4;
+// NDL Kokkai API terms (https://kokkai.ndl.go.jp/api.html, section 4) ask
+// machine clients not to send concurrent requests and to wait a few seconds
+// after each response before the next request. The override can only lengthen
+// the wait.
+const NDL_MIN_INTERVAL_MS = 3000;
+const NDL_INTERVAL_MS = (() => {
+  const parsed = Number.parseInt(process.env.HOUAN_MCP_NDL_INTERVAL_MS ?? "", 10);
+  return Number.isFinite(parsed) && parsed > NDL_MIN_INTERVAL_MS ? parsed : NDL_MIN_INTERVAL_MS;
+})();
 const STRIP_TAGS_MAX_INPUT = 2 * 1024 * 1024;
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const ISSUE_ID_PATTERN = /^[0-9A-Za-z]{1,40}$/;
@@ -252,6 +261,32 @@ function releaseInflightSlot() {
   }
 }
 
+let ndlChain = Promise.resolve();
+let ndlLastFinishedAt = 0;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Runs NDL fetches one at a time, each starting no sooner than NDL_INTERVAL_MS
+// after the previous one finished (whether it succeeded or failed).
+function withNdlPacing(task) {
+  const run = ndlChain.then(async () => {
+    for (;;) {
+      const wait = ndlLastFinishedAt + NDL_INTERVAL_MS - Date.now();
+      if (wait <= 0) break;
+      await sleep(wait);
+    }
+    try {
+      return await task();
+    } finally {
+      ndlLastFinishedAt = Date.now();
+    }
+  });
+  ndlChain = run.catch(() => {});
+  return run;
+}
+
 function pruneCache() {
   if (responseCache.size <= CACHE_MAX_ENTRIES) return;
   const oldest = responseCache.keys().next().value;
@@ -318,6 +353,13 @@ async function fetchAllowed(url, expectedOrigin, accept) {
     return cached;
   }
 
+  if (target.origin === NDL_ORIGIN) {
+    return withNdlPacing(() => fetchAndCache(target, cacheKey, accept));
+  }
+  return fetchAndCache(target, cacheKey, accept);
+}
+
+async function fetchAndCache(target, cacheKey, accept) {
   await acquireInflightSlot();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
