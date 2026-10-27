@@ -12,7 +12,7 @@ const SHUGIIN_BASE = `${SHUGIIN_ORIGIN}/internet/itdb_gian.nsf/html/gian`;
 const SANGIIN_BASE = `${SANGIIN_ORIGIN}/japanese/joho1/kousei/gian`;
 const SHUGIIN_PATH_PREFIX = "/internet/itdb_gian.nsf/";
 const SANGIIN_PATH_PREFIX = "/japanese/joho1/kousei/gian/";
-const DEFAULT_SESSION = 221;
+const DEFAULT_SESSION = 222;
 const REQUEST_TIMEOUT_MS = (() => {
   const parsed = Number.parseInt(process.env.HOUAN_MCP_TIMEOUT_MS ?? "20000", 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 20000;
@@ -95,7 +95,7 @@ const tools = [
         session: {
           type: "number",
           minimum: 1,
-          description: "Diet session number. Defaults to 221.",
+          description: `Diet session number. Defaults to ${DEFAULT_SESSION}.`,
         },
         limit: {
           type: "number",
@@ -511,7 +511,7 @@ async function getMeetingRecord(args) {
 }
 
 function shugiinIndexUrl(session) {
-  return `${SHUGIIN_BASE}/${session}/${session}gian.htm`;
+  return `${SHUGIIN_BASE}/kaiji${session}.htm`;
 }
 
 function sangiinIndexUrl(session) {
@@ -520,10 +520,7 @@ function sangiinIndexUrl(session) {
 
 function absoluteShugiinUrl(href, session) {
   if (!href) return null;
-  if (/^https?:/i.test(href)) return href;
-  if (href.startsWith("./")) return `${SHUGIIN_BASE}/${session}/${href.slice(2)}`;
-  if (href.startsWith("/")) return `${SHUGIIN_ORIGIN}${href}`;
-  return `${SHUGIIN_BASE}/${session}/${href}`;
+  return new URL(decodeHtmlEntities(href), shugiinIndexUrl(session)).toString();
 }
 
 function absoluteSangiinUrl(href, session) {
@@ -534,37 +531,64 @@ function absoluteSangiinUrl(href, session) {
   return `${SANGIIN_BASE}/${session}/${href}`;
 }
 
+function htmlCells(row) {
+  return Array.from(row.matchAll(/<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]>/gi), (m) => m[1]);
+}
+
+function cellHref(cell) {
+  return /<a\b[^>]*\bhref\s*=\s*["']([^"']+)["']/i.exec(cell ?? "")?.[1] ?? null;
+}
+
 function parseShugiinBills(html, session) {
   const bills = [];
-  const rowPattern = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
-  for (const rowMatch of html.matchAll(rowPattern)) {
-    const row = rowMatch[1];
-    const cells = [];
-    for (const cell of row.matchAll(/<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi)) {
-      cells.push(cell[1]);
+  let tablesParsed = 0;
+  for (const table of html.matchAll(/<table\b[^>]*>[\s\S]*?<\/table>/gi)) {
+    const caption = /<caption\b[^>]*>([\s\S]*?)<\/caption>/i.exec(table[0]);
+    const tableType = caption ? stripTags(caption[1]).replace(/の一覧$/, "") : null;
+    // Some official tables (e.g. 条約) omit the header's surrounding <tr>.
+    const headers = Array.from(table[0].matchAll(/<th\b[^>]*>([\s\S]*?)<\/th>/gi),
+      (m) => stripTags(m[1]).replace(/\s/g, ""));
+    const knownType = ["衆法", "参法", "閣法", "条約", "予算", "承諾", "決算その他"].includes(tableType);
+    if (!knownType && !headers.includes("議案件名")) continue;
+    const required = ["提出回次", "議案件名", "審議状況", "経過情報"];
+    if (required.some((name) => !headers.includes(name))) {
+      throw new Error("Unrecognized Shugiin bill table headers");
     }
-    if (cells.length < 3) continue;
-    const text = cells.map(stripTags);
-    const numCell = text[0];
-    if (!/^\d+$/.test(numCell)) continue;
-    const links = [];
-    for (const a of row.matchAll(/<a\s+[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)) {
-      links.push({ href: a[1], text: stripTags(a[2]) });
+    tablesParsed++;
+    const column = (name) => headers.indexOf(name);
+    for (const row of table[0].matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)) {
+      if (!/<td\b/i.test(row[1])) continue;
+      const cells = htmlCells(row[1]);
+      const text = cells.map(stripTags);
+      const submittedSession = text[column("提出回次")];
+      const billNumber = column("番号") >= 0 ? text[column("番号")] : null;
+      const title = text[column("議案件名")];
+      if (cells.length !== headers.length || !/^[1-9]\d*$/.test(submittedSession) ||
+          (billNumber !== null && !/^\d+$/.test(billNumber)) || !title) {
+        throw new Error("Malformed row in Shugiin bill table");
+      }
+      bills.push({
+        chamber: "shugiin",
+        session,
+        submittedSession: Number(submittedSession),
+        billType: column("種類") >= 0 ? text[column("種類")] : tableType,
+        billNumber,
+        title,
+        status: text[column("審議状況")],
+        proceedingURL: absoluteShugiinUrl(cellHref(cells[column("経過情報")]), session),
+        fullTextURL: absoluteShugiinUrl(cellHref(cells[column("本文情報")]), session),
+      });
     }
-    const titleLink = links.find((l) => l.text && !/(過去|本文|要綱|英文|提出時)/.test(l.text));
-    const proceeding = links.find((l) => /過去|経過|議案要旨|議案情報/.test(l.text));
-    const fullText = links.find((l) => /本文/.test(l.text));
-    bills.push({
-      chamber: "shugiin",
-      session,
-      billNumber: numCell,
-      title: titleLink ? titleLink.text : (text[1] ?? ""),
-      status: text[text.length - 1] ?? "",
-      proceedingURL: absoluteShugiinUrl(proceeding?.href ?? titleLink?.href ?? null, session),
-      fullTextURL: absoluteShugiinUrl(fullText?.href ?? null, session),
-    });
   }
+  if (tablesParsed === 0) throw new Error("No recognized Shugiin bill tables found (HTML layout may have changed)");
   return bills;
+}
+
+class BillSearchError extends Error {
+  constructor(sourceErrors) {
+    super("Bill search failed; no complete search result is available");
+    this.sourceErrors = sourceErrors;
+  }
 }
 
 function parseSangiinBills(html, session) {
@@ -607,6 +631,7 @@ async function searchBills(args) {
 
   const sources = {};
   const collected = [];
+  const sourceErrors = [];
 
   if (chamber === "shugiin" || chamber === "both") {
     const url = shugiinIndexUrl(session);
@@ -615,7 +640,7 @@ async function searchBills(args) {
       const html = await fetchHtml(url, SHUGIIN_ORIGIN);
       collected.push(...parseShugiinBills(html, session));
     } catch (err) {
-      log(`shugiin fetch failed: ${err instanceof Error ? err.message : err}`);
+      sourceErrors.push({ chamber: "shugiin", url, message: err instanceof Error ? err.message : String(err) });
     }
   }
 
@@ -626,9 +651,12 @@ async function searchBills(args) {
       const html = await fetchHtml(url, SANGIIN_ORIGIN);
       collected.push(...parseSangiinBills(html, session));
     } catch (err) {
-      log(`sangiin fetch failed: ${err instanceof Error ? err.message : err}`);
+      sourceErrors.push({ chamber: "sangiin", url, message: err instanceof Error ? err.message : String(err) });
     }
   }
+
+  // Never present a failed or partially fetched search as a successful zero-hit search.
+  if (sourceErrors.length > 0) throw new BillSearchError(sourceErrors);
 
   const filtered = collected
     .filter((b) => b.title && b.title.toLowerCase().includes(needle))
@@ -668,34 +696,65 @@ function validateProceedingUrl(chamber, raw) {
   return { target, expectedOrigin };
 }
 
+function parseShugiinBillDetail(html, proceedingURL) {
+  let timeline;
+  for (const table of html.matchAll(/<table\b[^>]*>[\s\S]*?<\/table>/gi)) {
+    const rows = Array.from(table[0].matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi),
+      (row) => htmlCells(row[1]).map(stripTags))
+      .filter((cells) => cells.length === 2 && cells[0] !== "項目")
+      .map(([label, detail]) => ({ label, detail }));
+    if (rows.some((row) => row.label === "議案件名")) {
+      timeline = rows;
+      break;
+    }
+  }
+  if (!timeline) throw new Error("No recognized Shugiin proceedings table found");
+  const values = new Map(timeline.map(({ label, detail }) => [label, detail]));
+  const value = (label) => values.get(label) || null;
+  // These cells contain a date and a value separated by a full-width slash.
+  const afterSlash = (label) => value(label)?.split("／").slice(1).join("／").trim() || null;
+  const fields = {
+    submitter: value("議案提出者"),
+    submittedDate: value("議案提出年月日") ?? value("議案提出日"),
+    committee: afterSlash("衆議院付託年月日／衆議院付託委員会"),
+    status: afterSlash("参議院審議終了年月日／参議院審議結果") ??
+      afterSlash("衆議院審議終了年月日／衆議院審議結果") ??
+      afterSlash("参議院審査終了年月日／参議院審査結果") ??
+      afterSlash("衆議院審査終了年月日／衆議院審査結果"),
+  };
+  return {
+    chamber: "shugiin",
+    proceedingURL,
+    title: value("議案件名"),
+    billType: value("議案種類"),
+    submittedSession: value("議案提出回次") ? Number(value("議案提出回次")) : null,
+    billNumber: value("議案番号"),
+    ...fields,
+    timeline,
+    parseWarnings: Object.entries(fields).filter(([, v]) => v === null)
+      .map(([key]) => `field ${key} not available from shugiin page`),
+    source: billsAttribution(),
+  };
+}
+
 async function getBill(args) {
   const chamber = assertEnum(args?.chamber, "chamber", ["shugiin", "sangiin"]);
   const { target, expectedOrigin } = validateProceedingUrl(chamber, args?.proceedingURL);
   const proceedingURL = target.toString();
   const html = await fetchHtml(proceedingURL, expectedOrigin);
+  if (chamber === "shugiin") return parseShugiinBillDetail(html, proceedingURL);
 
   const titleMatch =
     /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html) ??
     /<h[12][^>]*>([\s\S]*?)<\/h[12]>/i.exec(html);
   const title = titleMatch ? stripTags(titleMatch[1]) : null;
 
-  const labelMap =
-    chamber === "shugiin"
-      ? {
-          submitter: /提出者[^<]*<\/[^>]*>([\s\S]*?)<(?:tr|\/table)/i,
-          submittedDate: /提出日[^<]*<\/[^>]*>([\s\S]*?)<(?:tr|\/table)/i,
-          committee:
-            /(?:衆議院での所属委員会|付託委員会|付託)[^<]*<\/[^>]*>([\s\S]*?)<(?:tr|\/table)/i,
-          status:
-            /(?:衆議院での審査状況|現状況|状況)[^<]*<\/[^>]*>([\s\S]*?)<(?:tr|\/table)/i,
-        }
-      : {
-          submitter: /(?:提出者|発議者)[^<]*<\/[^>]*>([\s\S]*?)<(?:tr|\/table)/i,
-          submittedDate: /(?:提出日|提出年月日)[^<]*<\/[^>]*>([\s\S]*?)<(?:tr|\/table)/i,
-          committee: /(?:付託委員会|付託)[^<]*<\/[^>]*>([\s\S]*?)<(?:tr|\/table)/i,
-          status:
-            /(?:議案の状況|議案状況|参議院での審議|状況)[^<]*<\/[^>]*>([\s\S]*?)<(?:tr|\/table)/i,
-        };
+  const labelMap = {
+    submitter: /(?:提出者|発議者)[^<]*<\/[^>]*>([\s\S]*?)<(?:tr|\/table)/i,
+    submittedDate: /(?:提出日|提出年月日)[^<]*<\/[^>]*>([\s\S]*?)<(?:tr|\/table)/i,
+    committee: /(?:付託委員会|付託)[^<]*<\/[^>]*>([\s\S]*?)<(?:tr|\/table)/i,
+    status: /(?:議案の状況|議案状況|参議院での審議|状況)[^<]*<\/[^>]*>([\s\S]*?)<(?:tr|\/table)/i,
+  };
 
   const fields = {};
   const warnings = [];
@@ -813,6 +872,16 @@ async function computeResponse(message) {
   } catch (error) {
     log(error?.stack ?? String(error));
     if (id !== undefined) {
+      if (error instanceof BillSearchError) {
+        return {
+          jsonrpc: "2.0",
+          id,
+          result: {
+            ...toolResult({ error: error.message, sourceErrors: error.sourceErrors }),
+            isError: true,
+          },
+        };
+      }
       return {
         jsonrpc: "2.0",
         id,

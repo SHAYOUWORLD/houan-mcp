@@ -91,10 +91,16 @@ Search 衆議院議案情報 / 参議院議案情報 by title keyword.
 {
   "keyword": "情報",
   "chamber": "both",
-  "session": 221,
+  "session": 222,
   "limit": 20
 }
 ```
+
+The default session is **222** (checked 2026-10-28); specify `session` explicitly for historical sessions. The default is a release-time constant, not automatic session discovery.
+
+For Shugiin results, `session` is the searched session, `submittedSession` is the session in which the item was introduced, and `billType` distinguishes 衆法 / 参法 / 閣法 and other agenda items. `billNumber` is the official number (or `null` for unnumbered items); `status` comes from 審議状況. Unpublished proceedings/full-text links are `null`.
+
+HTTP, network, timeout, and unrecognized Shugiin table errors are returned as an MCP tool result with `isError: true`. Its text contains `error` and `sourceErrors` (chamber, URL, message), rather than a successful zero-hit result. When searching `both`, a failure in either chamber fails the whole search; request one chamber explicitly if you want to retry it alone. A successful search with no title matches still returns `matched: 0` and `results: []`.
 
 ### `get_bill`
 
@@ -143,6 +149,14 @@ The response includes 花田貴裕 政府参考人's verbatim answer with `meeti
 - It writes JSON-RPC messages only to stdout and logs only to stderr.
 - It fetches only the NDL Kokkai API and 衆/参 議案情報 endpoints.
 - Diet records in NDL typically appear with a 1–2 week lag after the committee meeting. If a recent meeting cannot be found, check back later or consult the chamber's video library directly.
+
+## Development checks
+
+```bash
+npm test
+```
+
+Tests launch the stdio server with network requests replaced by local official-HTML samples. They cover Shugiin search/proceedings, failure reporting, and the existing Sangiin and NDL tools. Sample sources and capture details are in `test/fixtures/README.md`.
 
 ## Related
 
