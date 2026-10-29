@@ -18,7 +18,7 @@
     - レート制限: 一括アクセス・並列リクエストを避けるよう案内あり
 2. **衆議院議案情報** (https://www.shugiin.go.jp/internet/itdb_gian.nsf/html/gian/)
     - 公開API なし、HTMLテーブル
-    - URL パターン: `{base}/{session}/{session}gian.htm`、詳細は `./keika/{HEX_ID}.htm`
+    - URL パターン: `{base}/kaiji{session}.htm`、詳細は `./keika/{HEX_ID}.htm`（2026-10-28 修正。ADR 0005）
 3. **参議院議案情報** (https://www.sangiin.go.jp/japanese/joho1/kousei/gian/)
     - 公開API なし、HTMLテーブル + PDF
     - URL パターン: `{base}/{session}/gian.htm`、詳細は `./meisai/m{session}{type}{session}{number}.htm`
