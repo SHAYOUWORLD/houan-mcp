@@ -211,7 +211,7 @@ test('existing protocol, both NDL tools, Sangiin search/detail, and URL validati
     call(4, 'get_bill', { chamber: 'sangiin', proceedingURL: 'https://www.sangiin.go.jp/japanese/joho1/kousei/gian/222/meisai/m222080222001.htm' }),
     call(5, 'get_bill', { chamber: 'shugiin', proceedingURL: 'https://example.com/keika/test.htm' }),
   ]);
-  assert.equal(responses[0].result.serverInfo.version, '0.1.3');
+  assert.equal(responses[0].result.serverInfo.version, '0.1.4');
   assert.deepEqual(responses[1].result, {});
   assert.equal(success(responses[2]).results[0].speech, 'テスト答弁');
   assert.equal(success(responses[3]).meeting.speeches[0].speech, 'テスト答弁');
