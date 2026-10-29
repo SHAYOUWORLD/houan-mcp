@@ -117,13 +117,24 @@ Retrieve a bill detail page (proceedings timeline, committee assignment, full-te
 
 This package uses three Japanese public sources:
 
-- **NDL Kokkai (国会会議録検索システム)** — <https://kokkai.ndl.go.jp/> · [API documentation](https://kokkai.ndl.go.jp/api.html). Diet records published 1947–. No auth required. Be a good neighbour: insert short delays between sequential requests, avoid concurrent bursts.
+- **NDL Kokkai (国会会議録検索システム)** — <https://kokkai.ndl.go.jp/> · [API documentation](https://kokkai.ndl.go.jp/api.html). Diet records published 1947–. No auth required. The API terms ask machine clients not to send concurrent requests and to wait a few seconds between requests; this server enforces that (see [Request pacing](#request-pacing)).
 - **衆議院議案情報** — <https://www.shugiin.go.jp/internet/itdb_gian.nsf/html/gian/menu.htm>
 - **参議院議案情報** — <https://www.sangiin.go.jp/japanese/joho1/kousei/gian/current/gian.htm>
 
 Tool results include the source URL. When you publish or redistribute output based on this package, include an appropriate attribution. Suggested:
 
 > 出典: 国会会議録検索システム (https://kokkai.ndl.go.jp/) / 衆議院議案情報 / 参議院議案情報
+
+## Request pacing
+
+The [NDL Kokkai API terms](https://kokkai.ndl.go.jp/api.html) (section 4) ask machine clients to avoid concurrent requests and to wait a few seconds after each response before sending the next one. `find_diet_qa` and `get_meeting_record` therefore:
+
+- send at most one request to `kokkai.ndl.go.jp` at a time, even when a client calls several tools at once or sends a JSON-RPC batch;
+- start each request at least 3 seconds after the previous one finished. Set `HOUAN_MCP_NDL_INTERVAL_MS` to wait longer; values below `3000` are ignored.
+
+Identical queries within 5 minutes are answered from an in-process cache and do not reach NDL. Several NDL calls in a row take about 3 seconds each. The pacing applies within one server process; if you run several copies, keep their combined traffic within the same terms.
+
+`HOUAN_MCP_TIMEOUT_MS` (default `20000`) sets the per-request timeout. It starts when the request is sent, not while it waits for its turn.
 
 ## Example: pulling a Mythos Q&A
 
