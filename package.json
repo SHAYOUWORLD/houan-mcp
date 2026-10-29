@@ -5,7 +5,7 @@
   "description": "Local stdio MCP server for searching Japanese Diet bills (衆参議案情報) and retrieving committee Q&A records via the NDL Kokkai API.",
   "type": "module",
   "bin": {
-    "houan-mcp": "./bin/houan-mcp.mjs"
+    "houan-mcp": "bin/houan-mcp.mjs"
   },
   "scripts": {
     "test": "node --test test/*.test.mjs"
