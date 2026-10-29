@@ -18,7 +18,7 @@
     - レート制限: 一括アクセス・並列リクエストを避けるよう案内あり（実装は ADR 0004）
 2. **衆議院議案情報** (https://www.shugiin.go.jp/internet/itdb_gian.nsf/html/gian/)
     - 公開API なし、HTMLテーブル
-    - URL パターン: `{base}/{session}/{session}gian.htm`、詳細は `./keika/{HEX_ID}.htm`
+    - URL パターン: `{base}/kaiji{session}.htm`、詳細は `./keika/{HEX_ID}.htm`（2026-10-28 修正。ADR 0005）
 3. **参議院議案情報** (https://www.sangiin.go.jp/japanese/joho1/kousei/gian/)
     - 公開API なし、HTMLテーブル + PDF
     - URL パターン: `{base}/{session}/gian.htm`、詳細は `./meisai/m{session}{type}{session}{number}.htm`
@@ -78,4 +78,4 @@
 - ADR 0001: MCP シリーズの分割戦略
 - NDL Kokkai API ドキュメント: <https://kokkai.ndl.go.jp/api.html>
 - 衆議院議案情報: <https://www.shugiin.go.jp/internet/itdb_gian.nsf/html/gian/menu.htm>
-- 参議院議案情報: <https://www.sangiin.go.jp/japanese/joho1/kousei/gian/index.htm>
+- 参議院議案情報: <https://www.sangiin.go.jp/japanese/joho1/kousei/gian/current/gian.htm>（旧記載の `index.htm` は 2026-10-29 時点で HTTP 404。ADR 0006）

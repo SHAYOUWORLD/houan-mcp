@@ -91,10 +91,16 @@ Search 衆議院議案情報 / 参議院議案情報 by title keyword.
 {
   "keyword": "情報",
   "chamber": "both",
-  "session": 221,
+  "session": 222,
   "limit": 20
 }
 ```
+
+When `session` is omitted, the server reads the session list behind the 衆議院議案情報 dropdown (`.../html/gian/pulldown.htm`, one small request, cached for 5 minutes like other responses) and searches the highest session listed, for both chambers. If that list cannot be read, it searches **222** (checked 2026-10-28) and adds an entry to `warnings`. `query.sessionSource` is `latest`, `fallback`, or `argument`. Specify `session` explicitly for historical sessions; no session list is fetched then.
+
+For Shugiin results, `session` is the searched session, `submittedSession` is the session in which the item was introduced, and `billType` distinguishes 衆法 / 参法 / 閣法 and other agenda items. `billNumber` is the official number (or `null` for unnumbered items); `status` comes from 審議状況. Unpublished proceedings/full-text links are `null`.
+
+HTTP, network, timeout, and unrecognized Shugiin table errors are returned as an MCP tool result with `isError: true`. Its text contains `error`, `sourceErrors` (chamber, URL, message) and `warnings`, rather than a successful zero-hit result. When searching `both`, a failure in either chamber fails the whole search; request one chamber explicitly if you want to retry it alone. A successful search with no title matches still returns `matched: 0` and `results: []`.
 
 ### `get_bill`
 
@@ -113,7 +119,7 @@ This package uses three Japanese public sources:
 
 - **NDL Kokkai (国会会議録検索システム)** — <https://kokkai.ndl.go.jp/> · [API documentation](https://kokkai.ndl.go.jp/api.html). Diet records published 1947–. No auth required. The API terms ask machine clients not to send concurrent requests and to wait a few seconds between requests; this server enforces that (see [Request pacing](#request-pacing)).
 - **衆議院議案情報** — <https://www.shugiin.go.jp/internet/itdb_gian.nsf/html/gian/menu.htm>
-- **参議院議案情報** — <https://www.sangiin.go.jp/japanese/joho1/kousei/gian/index.htm>
+- **参議院議案情報** — <https://www.sangiin.go.jp/japanese/joho1/kousei/gian/current/gian.htm>
 
 Tool results include the source URL. When you publish or redistribute output based on this package, include an appropriate attribution. Suggested:
 
@@ -154,6 +160,14 @@ The response includes 花田貴裕 政府参考人's verbatim answer with `meeti
 - It writes JSON-RPC messages only to stdout and logs only to stderr.
 - It fetches only the NDL Kokkai API and 衆/参 議案情報 endpoints.
 - Diet records in NDL typically appear with a 1–2 week lag after the committee meeting. If a recent meeting cannot be found, check back later or consult the chamber's video library directly.
+
+## Development checks
+
+```bash
+npm test
+```
+
+Tests launch the stdio server with network requests replaced by local official-HTML samples. They cover Shugiin search/proceedings, failure reporting, and the existing Sangiin and NDL tools. Sample sources and capture details are in `test/fixtures/README.md`.
 
 ## Related
 

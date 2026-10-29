@@ -8,7 +8,7 @@
     "houan-mcp": "./bin/houan-mcp.mjs"
   },
   "scripts": {
-    "test": "node --test test/ndl-pacing.test.mjs"
+    "test": "node --test test/*.test.mjs"
   },
   "files": [
     "bin",
