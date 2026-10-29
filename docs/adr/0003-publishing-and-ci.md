@@ -1,8 +1,8 @@
 # ADR 0003 — 公開・CI 方針
 
-- Status: Pending(2026-04-25 時点で npm 公開待ち)
+- Status: Pending(2026-04-25 時点で npm 公開待ち)。npm の認証(`NPM_TOKEN`)は ADR 0007 で trusted publishing に置き換え
 - Date: 2026-04-25
-- Related: ADR 0001
+- Related: ADR 0001, ADR 0007
 
 ## Context
 

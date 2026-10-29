@@ -13,10 +13,20 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
+      # npm trusted publishing (OIDC) needs Node 22.14.0+ and npm 11.5.1+.
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
+      - name: Verify npm supports trusted publishing
+        run: |
+          node -e '
+            const [major, minor, patch] = process.argv[1].split(".").map(Number);
+            if (major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))) {
+              console.error(`npm ${process.argv[1]} cannot publish with OIDC; 11.5.1 or later is required`);
+              process.exit(1);
+            }
+          ' "$(npm --version)"
       - name: Verify version matches tag
         run: |
           PKG_VERSION=$(node -p "require('./package.json').version")
@@ -25,13 +35,6 @@ jobs:
             echo "Tag $TAG_VERSION does not match package.json version $PKG_VERSION"
             exit 1
           fi
-      - name: Publish
-        run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      - name: Install mcp-publisher
-        run: |
-          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
       - name: Verify server.json version matches tag
         run: |
           SERVER_VERSION=$(node -p "require('./server.json').version")
@@ -40,6 +43,15 @@ jobs:
             echo "Tag $TAG_VERSION does not match server.json version $SERVER_VERSION"
             exit 1
           fi
+      - name: Test
+        run: npm test
+      # Authenticates through the trusted publisher registered on npmjs.com;
+      # no token is used, and provenance is attached automatically.
+      - name: Publish
+        run: npm publish
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
       - name: Authenticate to MCP Registry
         run: ./mcp-publisher login github-oidc
       - name: Publish to MCP Registry
