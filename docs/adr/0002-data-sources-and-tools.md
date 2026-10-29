@@ -78,4 +78,4 @@
 - ADR 0001: MCP シリーズの分割戦略
 - NDL Kokkai API ドキュメント: <https://kokkai.ndl.go.jp/api.html>
 - 衆議院議案情報: <https://www.shugiin.go.jp/internet/itdb_gian.nsf/html/gian/menu.htm>
-- 参議院議案情報: <https://www.sangiin.go.jp/japanese/joho1/kousei/gian/index.htm>
+- 参議院議案情報: <https://www.sangiin.go.jp/japanese/joho1/kousei/gian/current/gian.htm>（旧記載の `index.htm` は 2026-10-29 時点で HTTP 404。ADR 0006）

@@ -49,13 +49,16 @@ function failure(response, chamber, pattern) {
   return data;
 }
 
-test('defaults to 222 in both schema and URL; separates number, title, status, and carryover session', async () => {
+test('defaults to the latest listed session; separates number, title, status, and carryover session', async () => {
   const { responses, fetches } = await run([{ jsonrpc: '2.0', id: 0, method: 'tools/list' }, search({ keyword: title })]);
   const schema = responses[0].result.tools.find((t) => t.name === 'search_bills').inputSchema;
-  assert.match(schema.properties.session.description, /Defaults to 222/);
+  assert.match(schema.properties.session.description, /latest session .*falls back to 222/);
   const data = success(responses[1]);
   assert.equal(data.query.session, 222);
-  assert.deepEqual(fetches, [base + 'kaiji222.htm']);
+  assert.equal(data.query.sessionSource, 'latest');
+  assert.deepEqual(data.warnings, []);
+  assert.deepEqual(fetches, [base + 'pulldown.htm', base + 'kaiji222.htm']);
+  assert.equal(data.source.sangiin, 'https://www.sangiin.go.jp/japanese/joho1/kousei/gian/current/gian.htm');
   assert.equal(data.matched, 1);
   assert.deepEqual(data.results[0], {
     chamber: 'shugiin', session: 222, submittedSession: 221, billType: '衆法', billNumber: '30', title,
@@ -67,8 +70,34 @@ test('handles an explicit historical session through kaiji221.htm', async () => 
   const { responses, fetches } = await run([search({ session: 221, keyword: '政治資金規正法' })]);
   const data = success(responses[0]);
   assert.equal(data.query.session, 221);
+  assert.equal(data.query.sessionSource, 'argument');
   assert.ok(data.results.some((b) => b.billNumber === '1' && b.submittedSession === 221));
   assert.deepEqual(fetches, [base + 'kaiji221.htm']);
+});
+
+test('takes the highest session from the list regardless of option order, also for Sangiin-only searches', async () => {
+  const { responses, fetches } = await run([search({ chamber: 'sangiin', keyword: '負担' })], 'pulldown-reversed');
+  const data = success(responses[0]);
+  assert.equal(data.query.session, 222);
+  assert.equal(data.query.sessionSource, 'latest');
+  assert.deepEqual(fetches, [base + 'pulldown.htm', 'https://www.sangiin.go.jp/japanese/joho1/kousei/gian/222/gian.htm']);
+});
+
+test('falls back to 222 with a warning when the session list cannot be read', async () => {
+  for (const [scenario, reason] of [['pulldown-error', /HTTP 503/], ['pulldown-empty', /no sessions listed/]]) {
+    const { responses, fetches } = await run([search({ keyword: title })], scenario);
+    const data = success(responses[0]);
+    assert.equal(data.query.session, 222);
+    assert.equal(data.query.sessionSource, 'fallback');
+    assert.equal(data.warnings.length, 1);
+    assert.match(data.warnings[0], /pulldown\.htm/);
+    assert.match(data.warnings[0], reason);
+    assert.equal(data.matched, 1);
+    assert.deepEqual(fetches, [base + 'pulldown.htm', base + 'kaiji222.htm']);
+  }
+  // When the list and the fallback session both fail, the error keeps the session-list warning.
+  const { responses } = await run([search({})], 'http-error');
+  assert.match(failure(responses[0], 'shugiin', /HTTP 400/).warnings[0], /pulldown\.htm \(HTTP 400/);
 });
 
 test('handles 衆法, 参法, 閣法 and missing full text without mixing their numbers', async () => {
@@ -137,7 +166,8 @@ test('a failure in either requested chamber fails the both search, including whe
   for (const [scenario, chamber, message] of [['http-error', 'shugiin', /HTTP 400/], ['sangiin-error', 'sangiin', /HTTP 503/]]) {
     const { responses, fetches } = await run([search({ chamber: 'both', keyword: '負担' })], scenario);
     failure(responses[0], chamber, message);
-    assert.equal(fetches.length, 2);
+    // Session list + both chamber lists.
+    assert.equal(fetches.length, 3);
   }
   const { responses } = await run([search({ chamber: 'both' })], 'all-error');
   assert.equal(failure(responses[0], 'shugiin', /HTTP 400/).sourceErrors.length, 2);
@@ -150,7 +180,9 @@ test('both succeeds and applies limit after collecting both sources; repeated ca
   const data = success(responses[1]);
   assert.ok(data.results.some((b) => b.chamber === 'sangiin'));
   assert.ok(data.results.some((b) => b.chamber === 'shugiin'));
-  assert.equal(fetches.length, 2);
+  // The session list is cached along with both chamber lists.
+  assert.deepEqual(fetches, [base + 'pulldown.htm', base + 'kaiji222.htm',
+    'https://www.sangiin.go.jp/japanese/joho1/kousei/gian/222/gian.htm']);
 });
 
 test('search result links can be passed directly to get_bill for title, number and proceedings', async () => {

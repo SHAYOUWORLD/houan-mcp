@@ -96,11 +96,11 @@ Search 衆議院議案情報 / 参議院議案情報 by title keyword.
 }
 ```
 
-The default session is **222** (checked 2026-10-28); specify `session` explicitly for historical sessions. The default is a release-time constant, not automatic session discovery.
+When `session` is omitted, the server reads the session list behind the 衆議院議案情報 dropdown (`.../html/gian/pulldown.htm`, one small request, cached for 5 minutes like other responses) and searches the highest session listed, for both chambers. If that list cannot be read, it searches **222** (checked 2026-10-28) and adds an entry to `warnings`. `query.sessionSource` is `latest`, `fallback`, or `argument`. Specify `session` explicitly for historical sessions; no session list is fetched then.
 
 For Shugiin results, `session` is the searched session, `submittedSession` is the session in which the item was introduced, and `billType` distinguishes 衆法 / 参法 / 閣法 and other agenda items. `billNumber` is the official number (or `null` for unnumbered items); `status` comes from 審議状況. Unpublished proceedings/full-text links are `null`.
 
-HTTP, network, timeout, and unrecognized Shugiin table errors are returned as an MCP tool result with `isError: true`. Its text contains `error` and `sourceErrors` (chamber, URL, message), rather than a successful zero-hit result. When searching `both`, a failure in either chamber fails the whole search; request one chamber explicitly if you want to retry it alone. A successful search with no title matches still returns `matched: 0` and `results: []`.
+HTTP, network, timeout, and unrecognized Shugiin table errors are returned as an MCP tool result with `isError: true`. Its text contains `error`, `sourceErrors` (chamber, URL, message) and `warnings`, rather than a successful zero-hit result. When searching `both`, a failure in either chamber fails the whole search; request one chamber explicitly if you want to retry it alone. A successful search with no title matches still returns `matched: 0` and `results: []`.
 
 ### `get_bill`
 
@@ -119,7 +119,7 @@ This package uses three Japanese public sources:
 
 - **NDL Kokkai (国会会議録検索システム)** — <https://kokkai.ndl.go.jp/> · [API documentation](https://kokkai.ndl.go.jp/api.html). Diet records published 1947–. No auth required. Be a good neighbour: insert short delays between sequential requests, avoid concurrent bursts.
 - **衆議院議案情報** — <https://www.shugiin.go.jp/internet/itdb_gian.nsf/html/gian/menu.htm>
-- **参議院議案情報** — <https://www.sangiin.go.jp/japanese/joho1/kousei/gian/index.htm>
+- **参議院議案情報** — <https://www.sangiin.go.jp/japanese/joho1/kousei/gian/current/gian.htm>
 
 Tool results include the source URL. When you publish or redistribute output based on this package, include an appropriate attribution. Suggested:
 

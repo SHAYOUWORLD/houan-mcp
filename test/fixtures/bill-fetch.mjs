@@ -14,6 +14,12 @@ globalThis.fetch = async (input, options) => {
     if (scenario === 'timeout') return new Promise((resolve, reject) => {
       options.signal.addEventListener('abort', () => reject(new Error('request timed out')), { once: true });
     });
+    if (/\/pulldown\.htm$/.test(url.pathname)) {
+      if (scenario === 'pulldown-error') return new Response('', { status: 503 });
+      if (scenario === 'pulldown-empty') return html('<html><body>メンテナンス中</body></html>');
+      const list = fixture('shugiin-pulldown.html');
+      return html(scenario === 'pulldown-reversed' ? list.trim().split('\n').reverse().join('\n') : list);
+    }
     if (/\/keika\//.test(url.pathname)) return html(fixture('shugiin-proceedings.html'));
     const session = /\/kaiji(221|222)\.htm$/.exec(url.pathname)?.[1];
     if (!session) throw new Error(`Unexpected Shugiin URL ${url}`);

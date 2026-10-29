@@ -12,6 +12,9 @@ const SHUGIIN_BASE = `${SHUGIIN_ORIGIN}/internet/itdb_gian.nsf/html/gian`;
 const SANGIIN_BASE = `${SANGIIN_ORIGIN}/japanese/joho1/kousei/gian`;
 const SHUGIIN_PATH_PREFIX = "/internet/itdb_gian.nsf/";
 const SANGIIN_PATH_PREFIX = "/japanese/joho1/kousei/gian/";
+// Session list loaded by the dropdown on the Shugiin bill menu: one <OPTION value="kaiji{n}.htm"> per session.
+const SHUGIIN_SESSIONS_URL = `${SHUGIIN_BASE}/pulldown.htm`;
+// Used only when SHUGIIN_SESSIONS_URL cannot be read.
 const DEFAULT_SESSION = 222;
 const REQUEST_TIMEOUT_MS = (() => {
   const parsed = Number.parseInt(process.env.HOUAN_MCP_TIMEOUT_MS ?? "20000", 10);
@@ -95,7 +98,7 @@ const tools = [
         session: {
           type: "number",
           minimum: 1,
-          description: `Diet session number. Defaults to ${DEFAULT_SESSION}.`,
+          description: `Diet session number. Defaults to the latest session listed by 衆議院議案情報 (falls back to ${DEFAULT_SESSION} if that list cannot be read).`,
         },
         limit: {
           type: "number",
@@ -388,7 +391,7 @@ function billsAttribution(extra) {
   return {
     name: "衆議院議案情報 / 参議院議案情報",
     shugiin: "https://www.shugiin.go.jp/internet/itdb_gian.nsf/html/gian/menu.htm",
-    sangiin: "https://www.sangiin.go.jp/japanese/joho1/kousei/gian/index.htm",
+    sangiin: "https://www.sangiin.go.jp/japanese/joho1/kousei/gian/current/gian.htm",
     attribution: "出典: 衆議院議案情報 / 参議院議案情報",
     retrievedAt: nowIso(),
     ...(extra ?? {}),
@@ -585,9 +588,10 @@ function parseShugiinBills(html, session) {
 }
 
 class BillSearchError extends Error {
-  constructor(sourceErrors) {
+  constructor(sourceErrors, warnings = []) {
     super("Bill search failed; no complete search result is available");
     this.sourceErrors = sourceErrors;
+    this.warnings = warnings;
   }
 }
 
@@ -622,12 +626,33 @@ function parseSangiinBills(html, session) {
   return bills;
 }
 
+async function resolveSession(value) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return { session: clampNumber(value, DEFAULT_SESSION, 1, 9999), sessionSource: "argument", warnings: [] };
+  }
+  let reason;
+  try {
+    const html = await fetchHtml(SHUGIIN_SESSIONS_URL, SHUGIIN_ORIGIN);
+    const sessions = Array.from(html.matchAll(/\bvalue\s*=\s*["']?kaiji(\d{1,4})\.htm/gi), (m) => Number(m[1]))
+      .filter((n) => n > 0);
+    if (sessions.length > 0) return { session: Math.max(...sessions), sessionSource: "latest", warnings: [] };
+    reason = "no sessions listed";
+  } catch (err) {
+    reason = err instanceof Error ? err.message : String(err);
+  }
+  return {
+    session: DEFAULT_SESSION,
+    sessionSource: "fallback",
+    warnings: [`Could not read the latest session from ${SHUGIIN_SESSIONS_URL} (${reason}); searched session ${DEFAULT_SESSION} instead. Pass session to choose one explicitly.`],
+  };
+}
+
 async function searchBills(args) {
   const keyword = assertString(args?.keyword, "keyword", { maxLength: KEYWORD_MAX });
   const chamber = assertEnum(args?.chamber ?? "both", "chamber", ["shugiin", "sangiin", "both"]);
-  const session = clampNumber(args?.session, DEFAULT_SESSION, 1, 9999);
   const limit = clampNumber(args?.limit, 30, 1, 200);
   const needle = keyword.toLowerCase();
+  const { session, sessionSource, warnings } = await resolveSession(args?.session);
 
   const sources = {};
   const collected = [];
@@ -656,18 +681,19 @@ async function searchBills(args) {
   }
 
   // Never present a failed or partially fetched search as a successful zero-hit search.
-  if (sourceErrors.length > 0) throw new BillSearchError(sourceErrors);
+  if (sourceErrors.length > 0) throw new BillSearchError(sourceErrors, warnings);
 
   const filtered = collected
     .filter((b) => b.title && b.title.toLowerCase().includes(needle))
     .slice(0, limit);
 
   return {
-    query: { keyword, chamber, session, limit },
+    query: { keyword, chamber, session, sessionSource, limit },
     indexes: sources,
     totalScanned: collected.length,
     matched: filtered.length,
     results: filtered,
+    warnings,
     source: billsAttribution({ session }),
     note:
       "Bill list pages on shugiin.go.jp / sangiin.go.jp are HTML-only (no public JSON API). Layout changes may affect parsing; report issues at https://github.com/SHAYOUWORLD/houan-mcp/issues.",
@@ -877,7 +903,7 @@ async function computeResponse(message) {
           jsonrpc: "2.0",
           id,
           result: {
-            ...toolResult({ error: error.message, sourceErrors: error.sourceErrors }),
+            ...toolResult({ error: error.message, sourceErrors: error.sourceErrors, warnings: error.warnings }),
             isError: true,
           },
         };
